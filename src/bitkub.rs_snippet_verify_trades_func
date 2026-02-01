@@ -1,0 +1,23 @@
+
+pub async fn get_recent_trades(
+    sym: &str,
+    limit: i32,
+) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
+    let host = "https://api.bitkub.com";
+    let path = "/api/v3/market/trades";
+    let url = format!("{}{}?sym={}&lmt={}", host, path, sym, limit);
+
+    let client = reqwest::Client::new();
+    let res = client.get(&url).send().await?;
+
+    let resp_json: serde_json::Value = res.json().await?;
+    
+    // Check if it's an error response (Bitkub usually returns error field if something goes wrong)
+    if let Some(error) = resp_json.get("error") {
+        if error.as_i64().unwrap_or(0) != 0 {
+             return Err(format!("Bitkub Error: {}", error).into());
+        }
+    }
+
+    Ok(resp_json)
+}

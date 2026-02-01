@@ -1,0 +1,15 @@
+[Unit]
+Description=DCA Bitcoin Bot Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/dca_btc
+ExecStart=/opt/dca_btc/dca_btc
+Restart=always
+RestartSec=5
+EnvironmentFile=/opt/dca_btc/.env
+
+[Install]
+WantedBy=multi-user.target

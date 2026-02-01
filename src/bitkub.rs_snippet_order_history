@@ -1,0 +1,49 @@
+
+pub async fn get_my_order_history(
+    sym: &str,
+    limit: i32,
+) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
+    // Config
+    let api_key = env::var("API_KEY").expect("API_KEY must be set");
+    let api_secret = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
+    let host = "https://api.bitkub.com";
+    let path = "/api/v3/market/my-order-history";
+    let query = format!("?sym={}&lmt={}", sym, limit); // p is optional, let's omit for now or default page 1
+
+    // Prepare Timestamp
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .to_string();
+
+    // Create Signature
+    let method = "GET";
+    let data_to_sign = format!("{}{}{}{}", ts, method, path, query);
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(api_secret.as_bytes())?;
+    mac.update(data_to_sign.as_bytes());
+    let signature = hex::encode(mac.finalize().into_bytes());
+
+    let client = reqwest::Client::new();
+    let url = format!("{}{}{}", host, path, query);
+
+    let res = client
+        .get(&url)
+        .header("Content-Type", "application/json")
+        .header("X-BTK-APIKEY", api_key)
+        .header("X-BTK-TIMESTAMP", ts)
+        .header("X-BTK-SIGN", signature)
+        .send()
+        .await?;
+
+    let resp_json: serde_json::Value = res.json().await?;
+    
+    // Check if it's an error response
+    if let Some(error) = resp_json.get("error") {
+        if error.as_i64().unwrap_or(0) != 0 {
+             return Err(format!("Bitkub Error: {}", error).into());
+        }
+    }
+
+    Ok(resp_json)
+}
