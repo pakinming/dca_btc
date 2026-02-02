@@ -40,3 +40,49 @@ pub async fn save_trade(
     let id: i32 = row.try_get("id")?;
     Ok(id)
 }
+
+pub async fn update_trade_receive(
+    pool: &PgPool,
+    id: i32,
+    receive_amount: f64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE trades SET receive_amount = $1 WHERE id = $2")
+        .bind(receive_amount)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn get_latest_trade(pool: &PgPool) -> Result<Option<crate::models::Trade>, sqlx::Error> {
+    let row = sqlx::query_as::<_, crate::models::Trade>(
+        "SELECT * FROM trades WHERE response_json->>'error' IS NULL ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}
+
+pub async fn get_trade(
+    pool: &PgPool,
+    id: i32,
+) -> Result<Option<crate::models::Trade>, sqlx::Error> {
+    let row = sqlx::query_as::<_, crate::models::Trade>("SELECT * FROM trades WHERE id = $1")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+    Ok(row)
+}
+
+pub async fn get_trade_by_order_id(
+    pool: &PgPool,
+    order_id: &str,
+) -> Result<Option<crate::models::Trade>, sqlx::Error> {
+    let row = sqlx::query_as::<_, crate::models::Trade>(
+        "SELECT * FROM trades WHERE response_json->>'id' = $1"
+    )
+    .bind(order_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row)
+}

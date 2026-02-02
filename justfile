@@ -31,5 +31,13 @@ sync host:
     # Exclude heavy target dir and git metadata
     rsync -avz --exclude 'target' --exclude '.git' ./ {{host}}:/opt/dca_btc/
     @echo "Sync Complete!"
-    # ssh {{host}} "~/.cargo/bin/cargo build && systemctl restart dca_btc"
-    ssh {{host}} "source /root/.cargo/env && cargo build --release && systemctl restart dca_btc"
+    #ssh {{host}} "~/.cargo/bin/cargo build && systemctl restart dca_btc"
+    
+    ssh {{host}} "systemctl stop dca_btc && \
+        source /root/.cargo/env && \
+        cd /opt/dca_btc && \
+        cargo build --release && \
+        cp target/release/dca_btc . && \
+        systemctl start dca_btc"
+
+    @echo "Deployment Complete! Check status with: ssh {{host}} 'systemctl status dca_btc'"
