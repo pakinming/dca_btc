@@ -11,33 +11,23 @@ build-linux:
     # cross build --target x86_64-unknown-linux-musl --release
     docker run --rm -v "${PWD}:/volume" --workdir /volume clux/muslrust cargo build --release
 
-# Deploy to Server
-# Usage: just deploy <user@host>
-deploy host: build-linux
-    @echo "Deploying to {{host}}..."
-    # Create directory if not exists
-    ssh {{host}} "mkdir -p /opt/dca_btc"
-    # Copy binary
-    scp target/aarch64-unknown-linux-musl/release/dca_btc .env {{host}}:/opt/dca_btc/
-    # Copy systemd service file
-    scp dca_btc.service {{host}}:/etc/systemd/system/
-    # Reload daemon and restart service
-    ssh {{host}} "systemctl daemon-reload && systemctl enable dca_btc && systemctl restart dca_btc"
-    @echo "Deployment Complete! Check status with: ssh {{host}} 'systemctl status dca_btc'"
-
 # Sync Source Code to Server (rsync)
-sync host:
+deploy host:
     @echo "Syncing project to {{host}}..."
     # Exclude heavy target dir and git metadata
     rsync -avz --exclude 'target' --exclude '.git' ./ {{host}}:/opt/dca_btc/
     @echo "Sync Complete!"
     #ssh {{host}} "~/.cargo/bin/cargo build && systemctl restart dca_btc"
     
-    ssh {{host}} "systemctl stop dca_btc && \
-        source /root/.cargo/env && \
+    # Update service file (scp overwrites automatically)
+    scp dca_btc.service {{host}}:/etc/systemd/system/
+
+    # Build and Restart to minimize downtime
+    ssh {{host}} "source /root/.cargo/env && \
         cd /opt/dca_btc && \
         cargo build --release && \
-        cp target/release/dca_btc . && \
-        systemctl start dca_btc"
+        systemctl daemon-reload && \
+        systemctl restart dca_btc"
 
     @echo "Deployment Complete! Check status with: ssh {{host}} 'systemctl status dca_btc'"
+    ssh {{host}} "journalctl -u dca_btc -n 10 "
