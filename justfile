@@ -3,7 +3,7 @@ set dotenv-load := true
 
 db-create:
     psql -h {{env_var('DB_HOST')}} -U postgres -d postgres -c \
-    "CREATE DATABASE dca_btc WITH LOCALE_PROVIDER=icu ICU_LOCALE='th-TH' ENCODING='UTF8' TEMPLATE=template0;"
+    "CREATE DATABASE {{env_var('DB_NAME')}} WITH LOCALE_PROVIDER=icu ICU_LOCALE='th-TH' ENCODING='UTF8' TEMPLATE=template0;"
 
 # Sync Source Code to Server (rsync)
 deploy host:
@@ -25,3 +25,15 @@ deploy host:
 
     @echo "Deployment Complete! Check status with: ssh {{host}} 'systemctl status dca_btc'"
     ssh {{host}} "journalctl -u dca_btc -n 10 "
+
+srv-log:
+    ssh {{env_var('HOST_DEPLOY')}} "journalctl -u dca_btc.service -f"
+
+srv-stop:
+    ssh {{env_var('HOST_DEPLOY')}} "systemctl stop dca_btc.service"
+
+srv-start:
+    ssh {{env_var('HOST_DEPLOY')}} "systemctl start dca_btc.service"
+
+srv-restart:
+    ssh {{env_var('HOST_DEPLOY')}} "systemctl restart dca_btc.service"

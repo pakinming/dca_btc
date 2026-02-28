@@ -20,6 +20,8 @@ pub enum Command {
     // Buy(String),
     #[command(description = "Buy BTC with Limit Order. Usage: /buylimit <amount_thb>")]
     BuyLimit(String),
+    BuyLimit500,
+    BuyLimit1000,
     #[command(description = "Show current status.")]
     Status,
     #[command(description = "Show my recent order history. Usage: /history <limit>")]
@@ -67,32 +69,79 @@ pub async fn run_bot(pool: Arc<PgPool>) {
                     bot.send_message(msg.chat.id, Command::descriptions().to_string())
                         .await?;
                 }
-                // Command::Buy(amount_str) => {
-                //     let amount = amount_str.trim().parse::<i32>().unwrap_or(0);
-                //     if amount <= 0 {
-                //         bot.send_message(
-                //             msg.chat.id,
-                //             "❌ Amount must be greater than 0. Usage: /buy <amount_thb>",
-                //         )
-                //         .await?;
-                //         return Ok(());
-                //     }
+                
+                Command::BuyLimit1000 => {
+                    let amount = 1000;
+                    match crate::bitkub::process_buy_limit(&pool, amount).await {
+                        Ok((msg_text, res)) => {
+                             bot.send_message(msg.chat.id, msg_text).await?;                               
+                            // Wait for 10 seconds to let the order process
+                            sleep(Duration::from_secs(10)).await;
 
-                // match crate::bitkub::place_bid(&pool, amount).await {
-                //         Ok(result_json) => {
-                //             let response_msg = format!(
-                //                 "✅ Success!\nAmount: {} THB\nBitkub ID: {}",
-                //                 amount,
-                //                 result_json["id"].as_str().unwrap_or("?")
-                //             );
-                //             bot.send_message(msg.chat.id, response_msg).await?;
-                //         }
-                //         Err(e) => {
-                //             bot.send_message(msg.chat.id, format!("❌ Error: {}", e)).await?;
-                //         }
-                //     }
-                // }
-            
+                            // extract id from res
+                            let order_id = res.get("id").and_then(|v| v.as_str());
+                            // We need to fetch the ID from the database or the response.
+                            // The place_bid returns the result from Bitkub.
+
+                            if let Some(oid) = order_id {
+
+                                match db::get_trade_by_order_id(&pool, oid).await {
+                                    Ok(Some(trade)) => {
+                                        if let Some(trade_rec) = trade.response_json.get("rec").and_then(|v| v.as_f64()) {
+                                            if trade_rec > 0.0 {
+                                                match db::update_trade_receive(&pool, trade.id, trade_rec).await {
+                                                    Ok(_) => tracing::info!("✅ COMMAND: /buylimit Updated trade receive amount for ID: {}", trade.id),
+                                                    Err(e) => tracing::error!("❌ COMMAND: /buylimit Failed to update trade receive amount for ID: {}", trade.id),
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => tracing::warn!("⚠️ COMMAND: /buylimit Could not match latest trade to update receive amount."),
+                                }
+                            }
+
+                        }
+                        Err(e) => {
+                             bot.send_message(msg.chat.id, e).await?;
+                        }
+                    }
+                }
+                Command::BuyLimit500 => {
+                    let amount = 500;
+                    match crate::bitkub::process_buy_limit(&pool, amount).await {
+                        Ok((msg_text, res)) => {
+                             bot.send_message(msg.chat.id, msg_text).await?;                               
+                            // Wait for 10 seconds to let the order process
+                            sleep(Duration::from_secs(10)).await;
+
+                            // extract id from res
+                            let order_id = res.get("id").and_then(|v| v.as_str());
+                            // We need to fetch the ID from the database or the response.
+                            // The place_bid returns the result from Bitkub.
+
+                            if let Some(oid) = order_id {
+
+                                match db::get_trade_by_order_id(&pool, oid).await {
+                                    Ok(Some(trade)) => {
+                                        if let Some(trade_rec) = trade.response_json.get("rec").and_then(|v| v.as_f64()) {
+                                            if trade_rec > 0.0 {
+                                                match db::update_trade_receive(&pool, trade.id, trade_rec).await {
+                                                    Ok(_) => tracing::info!("✅ COMMAND: /buylimit Updated trade receive amount for ID: {}", trade.id),
+                                                    Err(e) => tracing::error!("❌ COMMAND: /buylimit Failed to update trade receive amount for ID: {}", trade.id),
+                                                }
+                                            }
+                                        }
+                                    }
+                                    _ => tracing::warn!("⚠️ COMMAND: /buylimit Could not match latest trade to update receive amount."),
+                                }
+                            }
+
+                        }
+                        Err(e) => {
+                             bot.send_message(msg.chat.id, e).await?;
+                        }
+                    }
+                }
                 Command::BuyLimit(amount_str) => {
                     let amount = amount_str.trim().parse::<i32>().unwrap_or(0);
                     

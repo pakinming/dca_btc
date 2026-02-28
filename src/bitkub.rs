@@ -242,8 +242,8 @@ pub async fn process_buy_limit(
     if amount <= 0 {
         return Err("❌ Amount must be greater than 0. Usage: /buylimit <amount_thb>".to_string());
     }
-    if amount > 100 {
-        return Err("❌ Error: Amount is too high. Max 100 THB".to_string());
+    if amount > 1000 {
+        return Err("❌ Error: Amount is too high. Max 1000 THB".to_string());
     }
 
     // 1. Get Ticker to find the best rate (Lowest Ask)
