@@ -53,32 +53,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         Box::pin(async move {
                             tracing::info!("⏰ Executing Scheduled Buy Alert...");
                             match bitkub::process_buy_limit(&pool, amount).await {
-                                Ok((_msg, res)) => {
+                                Ok(res) => {
                                     tracing::info!("✅ Scheduled Buy Success: {:?}", res);
                                     
-                                    // Wait for 10 seconds to let the order process
-                                    sleep(Duration::from_secs(10)).await;
-                                    
-                                    // extract id from res
-                                    let order_id = res.get("id").and_then(|v| v.as_str());
-                                    // We need to fetch the ID from the database or the response. 
-                                    // The place_bid returns the result from Bitkub.
-                                    
-                                    if let Some(oid) = order_id {
-                                         
-                                         match db::get_trade_by_order_id(&pool, oid).await {
-                                             Ok(Some(trade)) => {
-                                                 if let Some(trade_rec) = trade.response_json.get("rec").and_then(|v| v.as_f64()) {
-                                                     if trade_rec > 0.0 {
-                                                        match db::update_trade_receive(&pool, trade.id, trade_rec).await {
-                                                            Ok(_) => tracing::info!("✅ SCHEDULED: Updated trade receive amount for ID: {}", trade.id),
-                                                            Err(e) => tracing::error!("❌ SCHEDULED: Failed to update trade receive amount for ID: {}", trade.id),
-                                                        }                                                        
-                                                     }
-                                                 }
-                                             }
-                                             _ => tracing::warn!("⚠️ SCHEDULED: Could not match latest trade to update receive amount."),
-                                         }
+                                    if let Some(oid) = res.get("id").and_then(|v| v.as_str()) {
+                                         let pool_clone = pool.clone();
+                                         let oid_str = oid.to_string();
+                                         tokio::spawn(async move {
+                                             crate::bot::wait_and_verify_order(pool_clone, oid_str).await;
+                                         });
                                     }
                                 }
                                 Err(e) => tracing::error!("❌ SCHEDULED: Scheduled Buy Failed: {}", e),

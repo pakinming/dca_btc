@@ -73,31 +73,13 @@ pub async fn run_bot(pool: Arc<PgPool>) {
                 Command::BuyLimit1000 => {
                     let amount = 1000;
                     match crate::bitkub::process_buy_limit(&pool, amount).await {
-                        Ok((msg_text, res)) => {
-                             bot.send_message(msg.chat.id, msg_text).await?;                               
-                            // Wait for 10 seconds to let the order process
-                            sleep(Duration::from_secs(10)).await;
-
-                            // extract id from res
-                            let order_id = res.get("id").and_then(|v| v.as_str());
-                            // We need to fetch the ID from the database or the response.
-                            // The place_bid returns the result from Bitkub.
-
-                            if let Some(oid) = order_id {
-
-                                match db::get_trade_by_order_id(&pool, oid).await {
-                                    Ok(Some(trade)) => {
-                                        if let Some(trade_rec) = trade.response_json.get("rec").and_then(|v| v.as_f64()) {
-                                            if trade_rec > 0.0 {
-                                                match db::update_trade_receive(&pool, trade.id, trade_rec).await {
-                                                    Ok(_) => tracing::info!("✅ COMMAND: /buylimit Updated trade receive amount for ID: {}", trade.id),
-                                                    Err(e) => tracing::error!("❌ COMMAND: /buylimit Failed to update trade receive amount for ID: {}", trade.id),
-                                                }
-                                            }
-                                        }
-                                    }
-                                    _ => tracing::warn!("⚠️ COMMAND: /buylimit Could not match latest trade to update receive amount."),
-                                }
+                        Ok(res) => {
+                            if let Some(oid) = res.get("id").and_then(|v| v.as_str()) {
+                                let pool_clone = pool.clone();
+                                let oid_str = oid.to_string();
+                                tokio::spawn(async move {
+                                    wait_and_verify_order(pool_clone, oid_str).await;
+                                });
                             }
 
                         }
@@ -109,31 +91,13 @@ pub async fn run_bot(pool: Arc<PgPool>) {
                 Command::BuyLimit500 => {
                     let amount = 500;
                     match crate::bitkub::process_buy_limit(&pool, amount).await {
-                        Ok((msg_text, res)) => {
-                             bot.send_message(msg.chat.id, msg_text).await?;                               
-                            // Wait for 10 seconds to let the order process
-                            sleep(Duration::from_secs(10)).await;
-
-                            // extract id from res
-                            let order_id = res.get("id").and_then(|v| v.as_str());
-                            // We need to fetch the ID from the database or the response.
-                            // The place_bid returns the result from Bitkub.
-
-                            if let Some(oid) = order_id {
-
-                                match db::get_trade_by_order_id(&pool, oid).await {
-                                    Ok(Some(trade)) => {
-                                        if let Some(trade_rec) = trade.response_json.get("rec").and_then(|v| v.as_f64()) {
-                                            if trade_rec > 0.0 {
-                                                match db::update_trade_receive(&pool, trade.id, trade_rec).await {
-                                                    Ok(_) => tracing::info!("✅ COMMAND: /buylimit Updated trade receive amount for ID: {}", trade.id),
-                                                    Err(e) => tracing::error!("❌ COMMAND: /buylimit Failed to update trade receive amount for ID: {}", trade.id),
-                                                }
-                                            }
-                                        }
-                                    }
-                                    _ => tracing::warn!("⚠️ COMMAND: /buylimit Could not match latest trade to update receive amount."),
-                                }
+                        Ok(res) => {
+                            if let Some(oid) = res.get("id").and_then(|v| v.as_str()) {
+                                let pool_clone = pool.clone();
+                                let oid_str = oid.to_string();
+                                tokio::spawn(async move {
+                                    wait_and_verify_order(pool_clone, oid_str).await;
+                                });
                             }
 
                         }
@@ -146,32 +110,14 @@ pub async fn run_bot(pool: Arc<PgPool>) {
                     let amount = amount_str.trim().parse::<i32>().unwrap_or(0);
                     
                     match crate::bitkub::process_buy_limit(&pool, amount).await {
-                        Ok((msg_text, res)) => {
-                             bot.send_message(msg.chat.id, msg_text).await?;
+                        Ok(res) => {
                                
-                            // Wait for 10 seconds to let the order process
-                            sleep(Duration::from_secs(10)).await;
-
-                            // extract id from res
-                            let order_id = res.get("id").and_then(|v| v.as_str());
-                            // We need to fetch the ID from the database or the response. 
-                            // The place_bid returns the result from Bitkub.
-                                    
-                            if let Some(oid) = order_id {
-                                         
-                                match db::get_trade_by_order_id(&pool, oid).await {
-                                    Ok(Some(trade)) => {
-                                        if let Some(trade_rec) = trade.response_json.get("rec").and_then(|v| v.as_f64()) {
-                                            if trade_rec > 0.0 {
-                                                match db::update_trade_receive(&pool, trade.id, trade_rec).await {
-                                                    Ok(_) => tracing::info!("✅ COMMAND: /buylimit Updated trade receive amount for ID: {}", trade.id),
-                                                    Err(e) => tracing::error!("❌ COMMAND: /buylimit Failed to update trade receive amount for ID: {}", trade.id),
-                                                }                                                        
-                                            }
-                                        }
-                                    }
-                                    _ => tracing::warn!("⚠️ COMMAND: /buylimit Could not match latest trade to update receive amount."),
-                                }
+                            if let Some(oid) = res.get("id").and_then(|v| v.as_str()) {
+                                let pool_clone = pool.clone();
+                                let oid_str = oid.to_string();
+                                tokio::spawn(async move {
+                                    wait_and_verify_order(pool_clone, oid_str).await;
+                                });
                             }
 
                         }
@@ -305,4 +251,158 @@ pub async fn send_alert(message: &str) -> Result<(), Box<dyn std::error::Error +
 
     bot.send_message(teloxide::types::ChatId(chat_id), message).await?;
     Ok(())
+}
+
+pub fn calculate_total_receive(order_info: &crate::models::OrderInfoResult) -> (f64, bool) {
+    let mut total_receive = 0.0;
+    let mut found_history = false;
+    
+    if let Some(history) = &order_info.history {
+        if !history.is_empty() {
+            found_history = true;
+            for h in history {
+                let amt = h.amount.unwrap_or(0.0);
+                let rate = h.rate.unwrap_or(0.0);
+                if rate > 0.0 {
+                    total_receive += amt / rate;
+                }
+            }
+        }
+    }
+    
+    (total_receive, found_history)
+}
+
+pub fn build_telegram_msg_template(spent: f64, rate: f64, received: f64, time_str: &str) -> String {
+    format!(
+        "🤗🎉 You Spent : {:.2} THB\nPrice : {} THB/BTC\nYou Received : {:.8} BTC\n\nTime : {}",
+        spent, rate, received, time_str
+    )
+}
+
+pub async fn wait_and_verify_order(pool: std::sync::Arc<PgPool>, order_id: String) {
+    let mut attempts = 0;
+    let max_attempts = 12; // 60 seconds total (12 * 5s)
+    let interval = Duration::from_secs(5);
+
+    tracing::info!("⏳ Starting order verification task for ID: {} (max 60s)", order_id);
+
+    while attempts < max_attempts {
+        sleep(interval).await;
+        attempts += 1;
+
+        match db::get_trade_by_order_id(&pool, &order_id).await {
+            Ok(Some(trade)) => {
+                match crate::bitkub::get_order_info("BTC_THB", &order_id, "buy").await {
+                    Ok(info_value) => {
+                        if let Ok(order_info) = serde_json::from_value::<crate::models::OrderInfoResult>(info_value) {
+                            let status = order_info.status.clone().unwrap_or_default();
+                            
+                            if status == "filled" || status == "cancelled" || attempts == max_attempts {
+                                let (mut total_receive, found_history) = calculate_total_receive(&order_info);
+                                
+                                if !found_history {
+                                    // fallback to rec if no history
+                                    total_receive = trade.response_json.get("rec").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                                } else {
+                                    use chrono::{TimeZone, Utc, FixedOffset};
+                                    if let Some(history) = &order_info.history {
+                                        for h in history {
+                                            let amt = h.amount.unwrap_or(0.0);
+                                            let fee = h.fee.unwrap_or(0.0);
+                                            let spent = amt + fee;
+                                            let rate = h.rate.unwrap_or(0.0);
+                                            let mut received = 0.0;
+                                            if rate > 0.0 {
+                                                received = amt / rate;
+                                            }
+
+                                            let ts = h.timestamp.unwrap_or(0);
+                                            if let chrono::LocalResult::Single(dt) = Utc.timestamp_millis_opt(ts) {
+                                                let tz = FixedOffset::east_opt(7 * 3600).unwrap();
+                                                let local_dt = dt.with_timezone(&tz);
+                                                let time_str = local_dt.format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string();
+
+                                                let msg = build_telegram_msg_template(spent, rate, received, &time_str);
+                                                let _ = send_alert(&msg).await;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if total_receive > 0.0 {
+                                    match db::update_trade_receive(&pool, trade.id, total_receive).await {
+                                        Ok(_) => tracing::info!("✅ Verified & Updated trade receive amount for ID: {} to {:.8}", trade.id, total_receive),
+                                        Err(e) => tracing::error!("❌ Failed to update trade receive amount for ID: {}: {}", trade.id, e),
+                                    }
+                                } else {
+                                    tracing::warn!("⚠️ Order history showed 0 received.");
+                                }
+                                
+                                break;
+                            } else {
+                                tracing::info!("⏳ Order {} status: {}. Waiting... (attempt {}/{})", order_id, status, attempts, max_attempts);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("❌ Failed to get order info for ID: {}: {}", order_id, e);
+                    }
+                }
+            }
+            _ => {
+                tracing::warn!("⚠️ Could not match latest trade to update receive amount. Retrying... (attempt {}/{})", attempts, max_attempts);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_total_receive() {
+        let json_payload = r#"{
+            "id": "6a1ea61cf39c7bd33b38271fm8a2qe",
+            "side": "buy",
+            "amount": 500,
+            "rate": 2258819,
+            "fee": 1.26,
+            "credit": 0,
+            "filled": 498.74,
+            "total": 500,
+            "status": "filled",
+            "history": [
+                {
+                    "id": "6a1ea61cf39c7bd33b38271fm8a2qe",
+                    "amount": 489.99,
+                    "credit": 0,
+                    "fee": 1.23,
+                    "rate": 2258819,
+                    "timestamp": 1780393504219,
+                    "txn_id": "6a1ea62022d997e15fdbd279m8a2qe"
+                },
+                {
+                    "id": "6a1ea61cf39c7bd33b38271fm8a2qe",
+                    "amount": 8.75,
+                    "credit": 0,
+                    "fee": 0.03,
+                    "rate": 2258819,
+                    "timestamp": 1780393510406,
+                    "txn_id": "6a1ea62622d997e15fdbd282m8a2qe"
+                }
+            ]
+        }"#;
+
+        let order_info: crate::models::OrderInfoResult = serde_json::from_str(json_payload).unwrap();
+        let (total_receive, found_history) = calculate_total_receive(&order_info);
+
+        assert!(found_history);
+        
+        let expected_receive = (489.99 / 2258819.0) + (8.75 / 2258819.0);
+        
+        assert!((total_receive - expected_receive).abs() < 1e-8);
+        assert!((total_receive - 0.00022079679686596843).abs() < 1e-8);
+    }
 }

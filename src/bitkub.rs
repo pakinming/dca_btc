@@ -238,7 +238,7 @@ pub async fn place_bid_limit(
 pub async fn process_buy_limit(
     pool: &PgPool,
     amount: i32,
-) -> Result<(String, serde_json::Value), String> {
+) -> Result<serde_json::Value, String> {
     if amount <= 0 {
         return Err("❌ Amount must be greater than 0. Usage: /buylimit <amount_thb>".to_string());
     }
@@ -247,35 +247,25 @@ pub async fn process_buy_limit(
     }
 
     // 1. Get Ticker to find the best rate (Lowest Ask)
-    let ticker_result = get_ticker(Some("BTC_THB")).await;
-    match ticker_result {
-        Ok(ticker_map) => {
-            if let Some(ticker) = ticker_map.get(0) {
-                let rate_lowest_ask = ticker.lowest_ask.parse::<f64>().unwrap_or(0.0) as i32;
+    let ticker_map = get_ticker(Some("BTC_THB"))
+        .await
+        .map_err(|e| format!("❌ Error fetching ticker: {}", e))?;
 
-                tracing::info!("Picked Rate (Lowest Ask): {}", rate_lowest_ask);
+    let ticker = ticker_map
+        .get(0)
+        .ok_or_else(|| "❌ Error: BTC_THB ticker not found.".to_string())?;
 
-                if rate_lowest_ask <= 0 {
-                    return Err("❌ Error: Invalid price from ticker.".to_string());
-                }
+    let rate_lowest_ask = ticker.lowest_ask.parse::<f64>().unwrap_or(0.0) as i32;
+    tracing::info!("Picked Rate (Lowest Ask): {}", rate_lowest_ask);
 
-                // 2. Place Limit Bid
-                match place_bid_limit(pool, amount, rate_lowest_ask).await {
-                    Ok(result_json) => {
-                        let response_msg = format!(
-                            "✅ Buy Limit Success!\nAmount: {} THB\nRate: {}",
-                            amount, rate_lowest_ask,
-                        );
-                        Ok((response_msg, result_json))
-                    }
-                    Err(e) => Err(format!("❌ Error placing order: {}", e)),
-                }
-            } else {
-                Err("❌ Error: BTC_THB ticker not found.".to_string())
-            }
-        }
-        Err(e) => Err(format!("❌ Error fetching ticker: {}", e)),
+    if rate_lowest_ask <= 0 {
+        return Err("❌ Error: Invalid price from ticker.".to_string());
     }
+
+    // 2. Place Limit Bid
+    place_bid_limit(pool, amount, rate_lowest_ask)
+        .await
+        .map_err(|e| format!("❌ Error placing order: {}", e))
 }
 
 

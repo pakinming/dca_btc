@@ -1,5 +1,6 @@
 use serde_json::Value;
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
+use tracing::info;
 use std::env;
 use std::error::Error;
 
@@ -12,6 +13,7 @@ pub async fn init_pool() -> Result<PgPool, Box<dyn Error>> {
 
     // Run Migrations
     sqlx::migrate!("./migrations").run(&pool).await?;
+    info!("✅ DB Connection Success");
 
     Ok(pool)
 }
