@@ -7,7 +7,6 @@ use sqlx::PgPool;
 use std::env;
 use std::error::Error;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::info;
 
 pub async fn place_bid(
     pool: &PgPool,
@@ -278,11 +277,13 @@ async fn call_bitkub_api(
     let api_key = env::var("API_KEY").expect("API_KEY must be set");
     let api_secret = env::var("SECRET_KEY").expect("SECRET_KEY must be set");
     let host = "https://api.bitkub.com";
-
+   
+    
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)?
         .as_millis()
         .to_string();
+    tracing::info!("Call: {}{} {:?}",host,path,query);
 
     let mut data_to_sign = format!("{}{}{}", ts, method, path);
 

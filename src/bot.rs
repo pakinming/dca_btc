@@ -1,7 +1,7 @@
 use sqlx::PgPool;
+use tracing::info;
 use std::time::Duration;
 use tokio::time::sleep;
-use tracing::info;
 use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::utils::command::BotCommands;
@@ -270,6 +270,9 @@ pub fn calculate_total_receive(order_info: &crate::models::OrderInfoResult) -> (
         }
     }
     
+    // Bitkub truncates to 8 decimal places for crypto
+    total_receive = (total_receive * 100_000_000.0).trunc() / 100_000_000.0;
+    
     (total_receive, found_history)
 }
 
@@ -282,80 +285,106 @@ pub fn build_telegram_msg_template(spent: f64, rate: f64, received: f64, time_st
 
 pub async fn wait_and_verify_order(pool: std::sync::Arc<PgPool>, order_id: String) {
     let mut attempts = 0;
-    let max_attempts = 12; // 60 seconds total (12 * 5s)
-    let interval = Duration::from_secs(5);
+    let max_attempts = 60; // 5 minutes total (60 * 5s)
+    let interval = Duration::from_secs(10);
 
-    tracing::info!("⏳ Starting order verification task for ID: {} (max 60s)", order_id);
+    tracing::info!("⏳ Starting order verification task for ID: {} (max 5m)", order_id);
+
+    // ดึงข้อมูล Trade จาก Database แค่ครั้งเดียว (ไม่ต้องทำซ้ำใน Loop)
+    let trade = match db::get_trade_by_order_id(&pool, &order_id).await {
+        Ok(Some(t)) => t,
+        _ => {
+            tracing::warn!("⚠️ Could not find trade in database for order_id: {}. Aborting task.", order_id);
+            return;
+        }
+    };
 
     while attempts < max_attempts {
         sleep(interval).await;
         attempts += 1;
 
-        match db::get_trade_by_order_id(&pool, &order_id).await {
-            Ok(Some(trade)) => {
-                match crate::bitkub::get_order_info("BTC_THB", &order_id, "buy").await {
-                    Ok(info_value) => {
-                        if let Ok(order_info) = serde_json::from_value::<crate::models::OrderInfoResult>(info_value) {
-                            let status = order_info.status.clone().unwrap_or_default();
-                            
-                            if status == "filled" || status == "cancelled" || attempts == max_attempts {
-                                let (mut total_receive, found_history) = calculate_total_receive(&order_info);
+        match crate::bitkub::get_order_info("BTC_THB", &order_id, "buy").await {
+            Ok(info_value) => {
+                if let Ok(order_info) = serde_json::from_value::<crate::models::OrderInfoResult>(info_value) {
+                    let status = order_info.status.clone().unwrap_or_default();
                                 
-                                if !found_history {
-                                    // fallback to rec if no history
-                                    total_receive = trade.response_json.get("rec").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                } else {
-                                    use chrono::{TimeZone, Utc, FixedOffset};
-                                    if let Some(history) = &order_info.history {
-                                        for h in history {
-                                            let amt = h.amount.unwrap_or(0.0);
-                                            let fee = h.fee.unwrap_or(0.0);
-                                            let spent = amt + fee;
-                                            let rate = h.rate.unwrap_or(0.0);
-                                            let mut received = 0.0;
-                                            if rate > 0.0 {
-                                                received = amt / rate;
-                                            }
+                    if status == "filled" || status == "cancelled" || attempts == max_attempts  {
+                        let (total_receive, found_history) = calculate_total_receive(&order_info);
+                        
+                        // 1. อัปเดต total_receive ทันทีเมื่อซื้อขายสำเร็จ
+                        if total_receive > 0.0 {
+                            match db::update_trade_receive(&pool, trade.id, total_receive).await {
+                                Ok(_) => tracing::info!("✅ Verified & Updated trade receive amount for ID: {} to {:.8}", trade.id, total_receive),
+                                Err(e) => tracing::error!("❌ Failed to update trade receive amount for ID: {}: {}", trade.id, e),
+                            }
+                        } else {
+                            tracing::warn!("⚠️ Order history showed 0 received.");
+                        }
 
-                                            let ts = h.timestamp.unwrap_or(0);
-                                            if let chrono::LocalResult::Single(dt) = Utc.timestamp_millis_opt(ts) {
-                                                let tz = FixedOffset::east_opt(7 * 3600).unwrap();
-                                                let local_dt = dt.with_timezone(&tz);
-                                                let time_str = local_dt.format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string();
+                        // 2. ทำการส่ง Alert และจัดการไม้ที่ถูก Split (ถ้ามี)
+                        if found_history {
+                            use chrono::{TimeZone, Utc, FixedOffset};
+                            if let Some(history) = &order_info.history {
+                                let mut total_history_amount = 0.0;
+                                for h in history {
+                                    total_history_amount += h.amount.unwrap_or(0.0) + h.fee.unwrap_or(0.0);
+                                }
+                                
+                                let is_split = history.len() > 1 || (trade.amount_thb as f64 - total_history_amount).abs() >= 1.0;
+                                tracing::info!("is_split: {} history.len(): {} total_history_amount: {} trade.amount_thb: {}", is_split, history.len(), total_history_amount, trade.amount_thb);
+                                
+                                for h in history {
+                                    let amt = h.amount.unwrap_or(0.0);
+                                    let fee = h.fee.unwrap_or(0.0);
+                                    let spent = amt + fee;
+                                    let rate = h.rate.unwrap_or(0.0);
+                                    let mut received = 0.0;
+                                    if rate > 0.0 {
+                                        received = amt / rate;
+                                        received = (received * 100_000_000.0).trunc() / 100_000_000.0;
+                                    }
 
-                                                let msg = build_telegram_msg_template(spent, rate, received, &time_str);
-                                                let _ = send_alert(&msg).await;
+                                    let ts = h.timestamp.unwrap_or(0);
+                                    if let chrono::LocalResult::Single(dt) = Utc.timestamp_millis_opt(ts) {
+                                        let tz = FixedOffset::east_opt(7 * 3600).unwrap();
+                                        let local_dt = dt.with_timezone(&tz);
+                                        let time_str = local_dt.format("%Y-%m-%dT%H:%M:%S%.3f%:z").to_string();
+
+                                        let msg = build_telegram_msg_template(spent, rate, received, &time_str);
+                                        let _ = send_alert(&msg).await;
+                                    }
+                                    
+                                    // Create a new record ONLY if it is split
+                                    if is_split {
+                                        if let Ok(h_val) = serde_json::to_value(h) {
+                                            match db::save_trade(&pool, "btc_thb", amt as i32, rate as i32, "limit", &h_val).await {
+                                                Ok(new_id) => {
+                                                    tracing::info!("✅ Created new match record ID: {}", new_id);
+                                                    if received > 0.0 {
+                                                        let _ = db::update_trade_receive(&pool, new_id, received).await;
+                                                    }
+                                                }
+                                                Err(e) => tracing::error!("❌ Failed to create match record: {}", e),
                                             }
                                         }
                                     }
                                 }
-
-                                if total_receive > 0.0 {
-                                    match db::update_trade_receive(&pool, trade.id, total_receive).await {
-                                        Ok(_) => tracing::info!("✅ Verified & Updated trade receive amount for ID: {} to {:.8}", trade.id, total_receive),
-                                        Err(e) => tracing::error!("❌ Failed to update trade receive amount for ID: {}: {}", trade.id, e),
-                                    }
-                                } else {
-                                    tracing::warn!("⚠️ Order history showed 0 received.");
-                                }
-                                
-                                break;
-                            } else {
-                                tracing::info!("⏳ Order {} status: {}. Waiting... (attempt {}/{})", order_id, status, attempts, max_attempts);
                             }
                         }
-                    }
-                    Err(e) => {
-                        tracing::error!("❌ Failed to get order info for ID: {}: {}", order_id, e);
+                        
+                        break;
+                    } else {
+                        tracing::info!("⏳ Order {} status: {}. Waiting... (attempt {}/{})", order_id, status, attempts, max_attempts);
                     }
                 }
             }
-            _ => {
-                tracing::warn!("⚠️ Could not match latest trade to update receive amount. Retrying... (attempt {}/{})", attempts, max_attempts);
+            Err(e) => {
+                tracing::error!("❌ Failed to get order info for ID: {}: {}", order_id, e);
             }
         }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -400,9 +429,9 @@ mod tests {
 
         assert!(found_history);
         
-        let expected_receive = (489.99 / 2258819.0) + (8.75 / 2258819.0);
+        let expected_receive = 0.00022079;
         
         assert!((total_receive - expected_receive).abs() < 1e-8);
-        assert!((total_receive - 0.00022079679686596843).abs() < 1e-8);
+        assert!((total_receive - 0.00022079).abs() < 1e-8);
     }
 }

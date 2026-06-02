@@ -7,8 +7,6 @@ use chrono_tz::Asia;
 use std::env;
 use std::error::Error;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::sleep;
 use tokio_cron_scheduler::{Job, JobScheduler};
 
 #[tokio::main]
