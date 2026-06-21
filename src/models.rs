@@ -1,6 +1,18 @@
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sqlx::FromRow;
+
+pub fn deserialize_f64_from_string_or_number<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Number(n) => n.as_f64().ok_or_else(|| serde::de::Error::custom("Invalid f64")),
+        serde_json::Value::String(s) => s.parse::<f64>().map_err(serde::de::Error::custom),
+        _ => Err(serde::de::Error::custom("Expected string or number")),
+    }
+}
 
 // โครงสร้าง Request Body สำหรับ Bitkub (เก็บไว้เผื่อใช้ในอนาคต)
 #[derive(Serialize, Debug)]
@@ -64,6 +76,31 @@ pub struct OrderInfoResult {
     pub history: Option<Vec<OrderInfoHistory>>,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+pub struct OpenOrder {
+    pub id: String,
+    pub hash: Option<String>,
+    pub side: String,
+    #[serde(rename = "type")]
+    pub order_type: String,
+    #[serde(deserialize_with = "deserialize_f64_from_string_or_number")]
+    pub rate: f64,
+    #[serde(deserialize_with = "deserialize_f64_from_string_or_number")]
+    pub amount: f64,
+    #[serde(deserialize_with = "deserialize_f64_from_string_or_number")]
+    pub receive: f64,
+    #[serde(deserialize_with = "deserialize_f64_from_string_or_number")]
+    pub fee: f64,
+    pub client_id: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+pub struct CancelOrderPayload {
+    pub sym: String,
+    pub id: String,
+    pub sd: String,
+}
+
 // โครงสร้างข้อมูล Trade ใน Database
 #[derive(FromRow, Debug)]
 pub struct Trade {
@@ -76,6 +113,7 @@ pub struct Trade {
     pub timestamp: DateTime<Utc>,
     pub response_json: serde_json::Value,
     pub receive_amount: Option<f64>,
+    pub status: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]

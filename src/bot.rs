@@ -20,7 +20,9 @@ pub enum Command {
     // Buy(String),
     #[command(description = "Buy BTC with Limit Order. Usage: /buylimit <amount_thb>")]
     BuyLimit(String),
+    #[command(description = "Buy BTC with Limit Order (500 THB).")]
     BuyLimit500,
+    #[command(description = "Buy BTC with Limit Order (1000 THB).")]
     BuyLimit1000,
     #[command(description = "Show current status.")]
     Status,
@@ -30,6 +32,10 @@ pub enum Command {
     OrderInfo,
     #[command(description = "Show wallet balances.")]
     Balance,
+    #[command(description = "Show my open orders. Usage: /openorders")]
+    OpenOrders,
+    #[command(description = "Cancel an order. Usage: /cancel <order_id>")]
+    Cancel(String),
 }
 
 pub async fn run_bot(pool: Arc<PgPool>) {
@@ -240,6 +246,41 @@ pub async fn run_bot(pool: Arc<PgPool>) {
                         }
                     }
                 }
+                Command::OpenOrders => {
+                    match crate::bitkub::get_my_open_orders("BTC_THB").await {
+                        Ok(orders) => {
+                            if orders.is_empty() {
+                                bot.send_message(msg.chat.id, "📭 No open orders found.").await?;
+                            } else {
+                                let mut message = "📋 My Open Orders:\n".to_string();
+                                for o in orders {
+                                    message.push_str(&format!("ID: `{}`\nType: {} {}\nRate: {}\nAmount: {}\n\n", o.id, o.side, o.order_type, o.rate, o.amount));
+                                }
+                                bot.send_message(msg.chat.id, message).await?;
+                            }
+                        }
+                        Err(e) => {
+                            bot.send_message(msg.chat.id, format!("❌ Error fetching open orders: {}", e)).await?;
+                        }
+                    }
+                }
+                Command::Cancel(order_id) => {
+                    let oid = order_id.trim();
+                    if oid.is_empty() {
+                        bot.send_message(msg.chat.id, "❌ Usage: /cancel <order_id>").await?;
+                        return Ok(());
+                    }
+                    match crate::bitkub::cancel_order("BTC_THB", oid, "buy").await {
+                        Ok(_) => {
+                            // Update DB immediately
+                            let _ = crate::db::update_trade_status_by_order_id(&pool, oid, "cancelled").await;
+                            bot.send_message(msg.chat.id, format!("✅ Cancelled order `{}` successfully.", oid)).await?;
+                        }
+                        Err(e) => {
+                            bot.send_message(msg.chat.id, format!("❌ Failed to cancel order `{}`: {}", oid, e)).await?;
+                        }
+                    }
+                }
             };
             Ok(())
         }
@@ -290,8 +331,10 @@ pub fn build_telegram_msg_template(spent: f64, rate: f64, received: f64, time_st
 
 pub async fn wait_and_verify_order(pool: std::sync::Arc<PgPool>, order_id: String) {
     let interval = Duration::from_secs(10);
-    let alert_interval = 3600; // 1 hour in seconds
+    let status_alert_interval = 600; // 10 minutes (600s)
+    let cancel_timeout = 3600; // 1 hour (3600s)
     let mut time_elapsed_since_last_alert = 0;
+    let mut total_time_elapsed = 0;
 
     tracing::info!("⏳ Starting order verification task for ID: {} (infinite loop until matched)", order_id);
 
@@ -306,7 +349,9 @@ pub async fn wait_and_verify_order(pool: std::sync::Arc<PgPool>, order_id: Strin
 
     loop {
         sleep(interval).await;
-        time_elapsed_since_last_alert += interval.as_secs();
+        let secs = interval.as_secs();
+        time_elapsed_since_last_alert += secs;
+        total_time_elapsed += secs;
 
         match crate::bitkub::get_order_info("BTC_THB", &order_id, "buy").await {
             Ok(info_value) => {
@@ -314,6 +359,11 @@ pub async fn wait_and_verify_order(pool: std::sync::Arc<PgPool>, order_id: Strin
                     let status = order_info.status.clone().unwrap_or_default();
                                 
                     if status == "filled" || status == "cancelled" {
+                        if status == "cancelled" {
+                            let _ = db::update_trade_status(&pool, trade.id, "cancelled").await;
+                            let msg = format!("🚫 Order `{}` was cancelled.", order_id);
+                            let _ = send_alert(&msg).await;
+                        }
                         let (total_receive, found_history) = calculate_total_receive(&order_info);
                         
                         // 1. อัปเดต total_receive ทันทีเมื่อซื้อขายสำเร็จ
@@ -381,8 +431,35 @@ pub async fn wait_and_verify_order(pool: std::sync::Arc<PgPool>, order_id: Strin
                     } else {
                         tracing::info!("⏳ Order {} status: {}. Waiting...", order_id, status);
                         
-                        if time_elapsed_since_last_alert >= alert_interval {
-                            let msg = format!("⏳ Order {} status: {}. Still waiting for match...", order_id, status);
+                        if total_time_elapsed >= cancel_timeout {
+                            tracing::warn!("⏳ Order {} timeout (1hr). Cancelling...", order_id);
+                            match crate::bitkub::cancel_order("BTC_THB", &order_id, "buy").await {
+                                Ok(_) => {
+                                    let _ = db::update_trade_status(&pool, trade.id, "cancelled").await;
+                                    let filled = order_info.filled.unwrap_or(0.0);
+                                    let remaining_thb = trade.amount_thb as f64 - filled;
+                                    let msg = format!("⏳ Order `{}` took too long (> 1 hr). Cancelled.\n🔄 Reopening new order for remaining {:.2} THB...", order_id, remaining_thb);
+                                    let _ = send_alert(&msg).await;
+                                    
+                                    if remaining_thb >= 10.0 {
+                                        let pool_clone = pool.clone();
+                                        tokio::spawn(async move {
+                                            if let Err(e) = crate::bitkub::process_buy_limit(&pool_clone, remaining_thb as i32).await {
+                                                tracing::error!("❌ Failed to reopen order: {}", e);
+                                                let _ = send_alert(&format!("❌ Failed to reopen order: {}", e)).await;
+                                            }
+                                        });
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!("❌ Failed to cancel order automatically: {}", e);
+                                }
+                            }
+                            break;
+                        }
+                        
+                        if time_elapsed_since_last_alert >= status_alert_interval {
+                            let msg = format!("⏳ Order `{}` status: {}. Still waiting for match...", order_id, status);
                             let _ = send_alert(&msg).await;
                             time_elapsed_since_last_alert = 0;
                         }

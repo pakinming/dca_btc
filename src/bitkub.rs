@@ -267,6 +267,46 @@ pub async fn process_buy_limit(
         .map_err(|e| format!("❌ Error placing order: {}", e))
 }
 
+pub async fn get_my_open_orders(
+    sym: &str,
+) -> Result<Vec<crate::models::OpenOrder>, Box<dyn Error + Send + Sync>> {
+    let path = "/api/v3/market/my-open-orders";
+    let query = format!("?sym={}", sym);
+    let resp_text = call_bitkub_api("GET", path, None, Some(query)).await?;
+    
+    let resp_json: crate::models::BitkubResponse<Vec<crate::models::OpenOrder>> = serde_json::from_str(&resp_text)?;
+    
+    if resp_json.error != 0 {
+        return Err(format!("Bitkub Error (my-open-orders): {}", resp_json.error).into());
+    }
+    
+    Ok(resp_json.result.unwrap_or_default())
+}
+
+pub async fn cancel_order(
+    sym: &str,
+    id: &str,
+    side: &str,
+) -> Result<serde_json::Value, Box<dyn Error + Send + Sync>> {
+    let path = "/api/v3/market/cancel-order";
+    let payload = crate::models::CancelOrderPayload {
+        sym: sym.to_string(),
+        id: id.to_string(),
+        sd: side.to_string(),
+    };
+    
+    let payload_str = serde_json::to_string(&payload)?;
+    let resp_text = call_bitkub_api("POST", path, Some(payload_str), None).await?;
+    
+    let resp_json: serde_json::Value = serde_json::from_str(&resp_text)?;
+    if let Some(error) = resp_json.get("error") {
+        if error.as_i64().unwrap_or(0) != 0 {
+            return Err(format!("Bitkub Error (cancel-order): {}", error).into());
+        }
+    }
+    
+    Ok(resp_json)
+}
 
 async fn call_bitkub_api(
     method: &str,

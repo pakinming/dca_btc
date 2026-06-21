@@ -29,7 +29,7 @@ pub async fn save_trade(
     // ใช้ query function แบบ runtime เพื่อป้องกัน macro compilation error ถ้าไม่มี DB จริงขณะ build
     // และเพื่อให้ยืดหยุ่นกว่า
     let row = sqlx::query(
-        "INSERT INTO trades (symbol, amount_thb, rat, type, response_json) VALUES ($1, $2, $3, $4, $5) RETURNING id"
+        "INSERT INTO trades (symbol, amount_thb, rat, type, response_json, status) VALUES ($1, $2, $3, $4, $5, 'open') RETURNING id"
     )
     .bind(symbol)
     .bind(amount)
@@ -48,9 +48,35 @@ pub async fn update_trade_receive(
     id: i32,
     receive_amount: f64,
 ) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE trades SET receive_amount = $1 WHERE id = $2")
+    sqlx::query("UPDATE trades SET receive_amount = $1, status = 'filled' WHERE id = $2")
         .bind(receive_amount)
         .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn update_trade_status(
+    pool: &PgPool,
+    id: i32,
+    status: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE trades SET status = $1 WHERE id = $2")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+pub async fn update_trade_status_by_order_id(
+    pool: &PgPool,
+    order_id: &str,
+    status: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE trades SET status = $1 WHERE response_json->>'id' = $2")
+        .bind(status)
+        .bind(order_id)
         .execute(pool)
         .await?;
     Ok(())
