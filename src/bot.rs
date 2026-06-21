@@ -284,11 +284,11 @@ pub fn build_telegram_msg_template(spent: f64, rate: f64, received: f64, time_st
 }
 
 pub async fn wait_and_verify_order(pool: std::sync::Arc<PgPool>, order_id: String) {
-    let mut attempts = 0;
-    let max_attempts = 60; // 5 minutes total (60 * 5s)
     let interval = Duration::from_secs(10);
+    let alert_interval = 3600; // 1 hour in seconds
+    let mut time_elapsed_since_last_alert = 0;
 
-    tracing::info!("⏳ Starting order verification task for ID: {} (max 5m)", order_id);
+    tracing::info!("⏳ Starting order verification task for ID: {} (infinite loop until matched)", order_id);
 
     // ดึงข้อมูล Trade จาก Database แค่ครั้งเดียว (ไม่ต้องทำซ้ำใน Loop)
     let trade = match db::get_trade_by_order_id(&pool, &order_id).await {
@@ -299,16 +299,16 @@ pub async fn wait_and_verify_order(pool: std::sync::Arc<PgPool>, order_id: Strin
         }
     };
 
-    while attempts < max_attempts {
+    loop {
         sleep(interval).await;
-        attempts += 1;
+        time_elapsed_since_last_alert += interval.as_secs();
 
         match crate::bitkub::get_order_info("BTC_THB", &order_id, "buy").await {
             Ok(info_value) => {
                 if let Ok(order_info) = serde_json::from_value::<crate::models::OrderInfoResult>(info_value) {
                     let status = order_info.status.clone().unwrap_or_default();
                                 
-                    if status == "filled" || status == "cancelled" || attempts == max_attempts  {
+                    if status == "filled" || status == "cancelled" {
                         let (total_receive, found_history) = calculate_total_receive(&order_info);
                         
                         // 1. อัปเดต total_receive ทันทีเมื่อซื้อขายสำเร็จ
@@ -374,7 +374,13 @@ pub async fn wait_and_verify_order(pool: std::sync::Arc<PgPool>, order_id: Strin
                         
                         break;
                     } else {
-                        tracing::info!("⏳ Order {} status: {}. Waiting... (attempt {}/{})", order_id, status, attempts, max_attempts);
+                        tracing::info!("⏳ Order {} status: {}. Waiting...", order_id, status);
+                        
+                        if time_elapsed_since_last_alert >= alert_interval {
+                            let msg = format!("⏳ Order {} status: {}. Still waiting for match...", order_id, status);
+                            let _ = send_alert(&msg).await;
+                            time_elapsed_since_last_alert = 0;
+                        }
                     }
                 }
             }
