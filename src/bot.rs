@@ -36,6 +36,11 @@ pub async fn run_bot(pool: Arc<PgPool>) {
     let bot = Bot::from_env();
     tracing::info!("Bot is running...");
 
+    match bot.set_my_commands(Command::bot_commands()).await {
+        Ok(_) => tracing::info!("Bot commands have been set successfully."),
+        Err(e) => tracing::error!("Failed to set bot commands: {}", e),
+    }
+
     Command::repl(bot, move |bot: Bot, msg: Message, cmd: Command| {
         let pool = pool.clone();
         async move {
