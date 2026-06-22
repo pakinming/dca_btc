@@ -357,13 +357,14 @@ pub async fn wait_and_verify_order(pool: std::sync::Arc<PgPool>, order_id: Strin
             Ok(info_value) => {
                 if let Ok(order_info) = serde_json::from_value::<crate::models::OrderInfoResult>(info_value) {
                     let status = order_info.status.clone().unwrap_or_default();
+                    let filled = order_info.filled.unwrap_or(0.0);
                                 
                     if status == "filled" || status == "cancelled" {
-                        if status == "cancelled" {
+                        if status == "cancelled" && filled == 0.0 {
                             let _ = db::update_trade_status(&pool, trade.id, "cancelled").await;
                             let msg = format!("🚫 Order `{}` was cancelled.", order_id);
                             let _ = send_alert(&msg).await;
-                        }
+                        } 
                         let (total_receive, found_history) = calculate_total_receive(&order_info);
                         
                         // 1. อัปเดต total_receive ทันทีเมื่อซื้อขายสำเร็จ
