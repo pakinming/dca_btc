@@ -36,6 +36,8 @@ pub enum Command {
     OpenOrders,
     #[command(description = "Cancel an order. Usage: /cancel <order_id>")]
     Cancel(String),
+    #[command(description = "Show my BTC portfolio and profit/loss.")]
+    Portfolio,
 }
 
 pub async fn run_bot(pool: Arc<PgPool>) {
@@ -278,6 +280,71 @@ pub async fn run_bot(pool: Arc<PgPool>) {
                         }
                         Err(e) => {
                             bot.send_message(msg.chat.id, format!("❌ Failed to cancel order `{}`: {}", oid, e)).await?;
+                        }
+                    }
+                }
+                Command::Portfolio => {
+                    tracing::info!("Calculating portfolio summary...");
+                    match crate::db::get_portfolio_stats(&pool).await {
+                        Ok(stats) => {
+                            if stats.total_capital <= 0.0 || stats.total_btc <= 0.0 {
+                                bot.send_message(
+                                    msg.chat.id,
+                                    "📭 ไม่พบประวัติการซื้อสำเร็จ (filled trades) ในฐานข้อมูล",
+                                )
+                                .await?;
+                            } else {
+                                match crate::bitkub::get_ticker(Some("BTC_THB")).await {
+                                    Ok(ticker_map) => {
+                                        if let Some(ticker) = ticker_map.get(0) {
+                                            let current_price = ticker.last.parse::<f64>().unwrap_or(0.0);
+                                            if current_price > 0.0 {
+                                                let total_capital = stats.total_capital;
+                                                let total_btc = stats.total_btc;
+                                                let avg_price = total_capital / total_btc;
+                                                let current_value = total_btc * current_price;
+                                                let profit_loss = current_value - total_capital;
+                                                let profit_loss_percent = (profit_loss / total_capital) * 100.0;
+
+                                                let pnl_emoji = if profit_loss >= 0.0 { "🟢" } else { "🔴" };
+                                                let pnl_prefix = if profit_loss >= 0.0 { "+" } else { "" };
+
+                                                let message = format!(
+                                                    "📊 สรุปข้อมูลพอร์ต BTC (DCA Bot)\n\n\
+                                                     💰 ขนาดทุนทั้งหมด: {} THB\n\
+                                                     🪙 BTC ที่ซื้อได้ทั้งหมด: {:.8} BTC\n\
+                                                     🏷️ ราคาเฉลี่ย: {} THB/BTC\n\n\
+                                                     📈 ราคาตลาดปัจจุบัน: {} THB/BTC\n\
+                                                     💵 มูลค่าปัจจุบัน: {} THB\n\n\
+                                                     {} กำไร/ขาดทุน: {}{} THB ({}{:.2}%)\n",
+                                                    crate::bitkub::add_commas(&format!("{:.2}", total_capital)),
+                                                    total_btc,
+                                                    crate::bitkub::add_commas(&format!("{:.2}", avg_price)),
+                                                    crate::bitkub::add_commas(&format!("{:.2}", current_price)),
+                                                    crate::bitkub::add_commas(&format!("{:.2}", current_value)),
+                                                    pnl_emoji,
+                                                    pnl_prefix,
+                                                    crate::bitkub::add_commas(&format!("{:.2}", profit_loss)),
+                                                    pnl_prefix,
+                                                    profit_loss_percent
+                                                );
+
+                                                bot.send_message(msg.chat.id, message).await?;
+                                            } else {
+                                                bot.send_message(msg.chat.id, "❌ ไม่สามารถอ่านราคา BTC ปัจจุบันจาก Bitkub ticker ได้").await?;
+                                            }
+                                        } else {
+                                            bot.send_message(msg.chat.id, "❌ ไม่พบข้อมูลราคา BTC ใน Ticker").await?;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        bot.send_message(msg.chat.id, format!("❌ ไม่สามารถดึงราคาล่าสุดได้: {}", e)).await?;
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            bot.send_message(msg.chat.id, format!("❌ เกิดข้อผิดพลาดกับฐานข้อมูล: {}", e)).await?;
                         }
                     }
                 }

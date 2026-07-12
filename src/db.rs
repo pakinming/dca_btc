@@ -114,3 +114,82 @@ pub async fn get_trade_by_order_id(
     .await?;
     Ok(row)
 }
+
+#[derive(Debug)]
+pub struct PortfolioStats {
+    pub total_capital: f64,
+    pub total_btc: f64,
+}
+
+pub async fn get_portfolio_stats(pool: &PgPool) -> Result<PortfolioStats, sqlx::Error> {
+    let row = sqlx::query(
+        "SELECT 
+            COALESCE(SUM(amount_thb), 0)::DOUBLE PRECISION as total_capital,
+            COALESCE(SUM(receive_amount), 0.0) as total_btc
+         FROM trades 
+         WHERE status = 'filled' AND response_json->>'txn_id' IS NULL"
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let total_capital: f64 = row.try_get("total_capital")?;
+    let total_btc: f64 = row.try_get("total_btc")?;
+
+    Ok(PortfolioStats {
+        total_capital,
+        total_btc,
+    })
+}
+
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_verify_stats() {
+        dotenvy::dotenv().ok();
+        let pool = init_pool().await.unwrap();
+
+        // 1. Fetch filtered stats
+        let stats = get_portfolio_stats(&pool).await.unwrap();
+        println!("\n=== VERIFICATION RESULTS (FILTERED BY TXN_ID IS NULL) ===");
+        println!("TOTAL CAPITAL SPENT (ขนาดทุน): {} THB", stats.total_capital);
+        println!("TOTAL BTC BOUGHT (BTC ที่ซื้อทั้งหมด): {:.8} BTC", stats.total_btc);
+
+        // 2. Fetch unfiltered stats
+        let unfiltered_row = sqlx::query(
+            "SELECT 
+                COALESCE(SUM(amount_thb), 0)::DOUBLE PRECISION as total_capital,
+                COALESCE(SUM(receive_amount), 0.0) as total_btc
+             FROM trades 
+             WHERE status = 'filled'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let unfiltered_capital: f64 = unfiltered_row.try_get("total_capital").unwrap();
+        let unfiltered_btc: f64 = unfiltered_row.try_get("total_btc").unwrap();
+
+        println!("\n=== UNFILTERED RESULTS (ALL FILLED ROWS - DOUBLE COUNTED) ===");
+        println!("UNFILTERED CAPITAL: {} THB", unfiltered_capital);
+        println!("UNFILTERED BTC: {:.8} BTC", unfiltered_btc);
+
+        // 3. Count split rows
+        let split_rows_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM trades WHERE status = 'filled' AND response_json->>'txn_id' IS NOT NULL"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        println!("\n=================================");
+        println!("NUMBER OF SPLIT MATCH RECORDS: {}", split_rows_count);
+        println!("=================================\n");
+
+        assert!(stats.total_capital <= unfiltered_capital);
+    }
+}
+
+
+
+

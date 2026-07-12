@@ -78,7 +78,7 @@ pub async fn place_bid(
     Ok(result_json)
 }
 
-fn add_commas(s: &str) -> String {
+pub fn add_commas(s: &str) -> String {
     let parts: Vec<&str> = s.split('.').collect();
     let int_part = parts[0];
     let mut result = String::new();
